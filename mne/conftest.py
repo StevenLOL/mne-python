@@ -28,7 +28,7 @@ except Exception:
 import numpy as np
 import mne
 from mne.datasets import testing
-from mne.utils import _pl
+from mne.utils import _pl, _assert_no_instances
 
 test_path = testing.data_path(download=False)
 s_path = op.join(test_path, 'MEG', 'sample')
@@ -62,6 +62,7 @@ def pytest_configure(config):
     #   doc/conf.py.
     warning_lines = r"""
     error::
+    ignore:.*deprecated and ignored since IPython.*:DeprecationWarning
     ignore::ImportWarning
     ignore:the matrix subclass:PendingDeprecationWarning
     ignore:numpy.dtype size changed:RuntimeWarning
@@ -124,6 +125,15 @@ def check_verbose(request):
         pytest.fail('.'.join([request.module.__name__,
                               request.function.__name__]) +
                     ' modifies logger.level')
+
+
+@pytest.fixture(autouse=True)
+def close_all():
+    """Close all matplotlib plots, regardless of test status."""
+    # This adds < 1 µS in local testing, and we have ~2500 tests, so ~2 ms max
+    import matplotlib.pyplot as plt
+    yield
+    plt.close('all')
 
 
 @pytest.fixture(scope='function')
@@ -318,9 +328,9 @@ def _check_skip_backend(name):
 @pytest.fixture()
 def renderer_notebook():
     """Verify that pytest_notebook is installed."""
-    from mne.viz.backends.renderer import _use_test_3d_backend
-    with _use_test_3d_backend('notebook'):
-        yield
+    from mne.viz.backends import renderer
+    with renderer._use_test_3d_backend('notebook'):
+        yield renderer
 
 
 @pytest.fixture(scope='session')
@@ -371,6 +381,7 @@ def _fwd_surf(_evoked_cov_sphere):
 @pytest.fixture(scope='session')
 def _fwd_subvolume(_evoked_cov_sphere):
     """Compute a forward for a surface source space."""
+    pytest.importorskip('nibabel')
     evoked, cov, sphere = _evoked_cov_sphere
     volume_labels = ['Left-Cerebellum-Cortex', 'right-Cerebellum-Cortex']
     with pytest.raises(ValueError,
@@ -449,6 +460,7 @@ def mixed_fwd_cov_evoked(_evoked_cov_sphere, _all_src_types_fwd):
 @pytest.mark.parametrize(params=[testing._pytest_param()])
 def src_volume_labels():
     """Create a 7mm source space with labels."""
+    pytest.importorskip('nibabel')
     volume_labels = mne.get_volume_labels_from_aseg(fname_aseg)
     src = mne.setup_volume_source_space(
         'sample', 7., mri='aseg.mgz', volume_label=volume_labels,
@@ -471,11 +483,51 @@ def download_is_error(monkeypatch):
     monkeypatch.setattr(mne.utils.fetching, '_get_http', _fail)
 
 
+@pytest.fixture()
+def brain_gc(request):
+    """Ensure that brain can be properly garbage collected."""
+    keys = ('renderer_interactive', 'renderer', 'renderer_notebook')
+    assert set(request.fixturenames) & set(keys) != set()
+    for key in keys:
+        if key in request.fixturenames:
+            is_pv = request.getfixturevalue(key)._get_3d_backend() == 'pyvista'
+            close_func = request.getfixturevalue(key).backend._close_all
+            break
+    if not is_pv:
+        yield
+        return
+    import pyvista
+    if LooseVersion(pyvista.__version__) <= LooseVersion('0.26.1'):
+        yield
+        return
+    from mne.viz import Brain
+    _assert_no_instances(Brain, 'before')
+    ignore = set(id(o) for o in gc.get_objects())
+    yield
+    close_func()
+    _assert_no_instances(Brain, 'after')
+    # We only check VTK for PyVista -- Mayavi/PySurfer is not as strict
+    objs = gc.get_objects()
+    bad = list()
+    for o in objs:
+        try:
+            name = o.__class__.__name__
+        except Exception:  # old Python, probably
+            pass
+        else:
+            if name.startswith('vtk') and id(o) not in ignore:
+                bad.append(name)
+        del o
+    del objs, ignore, Brain
+    assert len(bad) == 0, 'VTK objects linger:\n' + '\n'.join(bad)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Handle the end of the session."""
     n = session.config.option.durations
     if n is None:
         return
+    print('\n')
     try:
         import pytest_harvest
     except ImportError:

@@ -22,6 +22,7 @@ import vtk
 
 from .base_renderer import _BaseRenderer
 from ._utils import _get_colormap_from_array, ALLOWED_QUIVER_MODES
+from ...fixes import _get_args
 from ...utils import copy_base_doc_to_subclass_doc, _check_option
 from ...externals.decorator import decorator
 
@@ -36,7 +37,7 @@ with warnings.catch_warnings():
         from pyvista import BackgroundPlotter
     from pyvista.utilities import try_callback
     from pyvista.plotting.plotting import _ALL_PLOTTERS
-VTK9 = LooseVersion(vtk.VTK_VERSION) >= LooseVersion('9.0')
+VTK9 = LooseVersion(getattr(vtk, 'VTK_VERSION', '9.0')) >= LooseVersion('9.0')
 
 
 _FIGURES = dict()
@@ -203,6 +204,11 @@ class _Renderer(_BaseRenderer):
             if self.antialias:
                 _enable_aa(self.figure, self.plotter)
 
+        # FIX: https://github.com/pyvista/pyvistaqt/pull/68
+        if LooseVersion(pyvista.__version__) >= '0.27.0':
+            if not hasattr(self.plotter, "iren"):
+                self.plotter.iren = None
+
         self.update_lighting()
 
     @contextmanager
@@ -276,6 +282,8 @@ class _Renderer(_BaseRenderer):
         lights[2].SetIntensity(0.5)
 
     def set_interaction(self, interaction):
+        if not hasattr(self.plotter, "iren") or self.plotter.iren is None:
+            return
         if interaction == "rubber_band_2d":
             for renderer in self.plotter.renderers:
                 renderer.enable_parallel_projection()
@@ -601,9 +609,10 @@ class _Renderer(_BaseRenderer):
         _close_3d_figure(figure=self.figure)
 
     def set_camera(self, azimuth=None, elevation=None, distance=None,
-                   focalpoint=None, roll=None):
+                   focalpoint=None, roll=None, reset_camera=True):
         _set_3d_view(self.figure, azimuth=azimuth, elevation=elevation,
-                     distance=distance, focalpoint=focalpoint, roll=roll)
+                     distance=distance, focalpoint=focalpoint, roll=roll,
+                     reset_camera=reset_camera)
 
     def reset_camera(self):
         self.plotter.reset_camera()
@@ -627,7 +636,7 @@ class _Renderer(_BaseRenderer):
 
     def remove_mesh(self, mesh_data):
         actor, _ = mesh_data
-        self.plotter.renderer.remove_actor(actor)
+        self.plotter.remove_actor(actor)
 
 
 def _create_actor(mapper=None):
@@ -658,6 +667,10 @@ def _add_mesh(plotter, *args, **kwargs):
         smooth_shading = kwargs.pop('smooth_shading')
     else:
         smooth_shading = True
+    # disable rendering pass for add_mesh, render()
+    # is called in show()
+    if 'render' not in kwargs and 'render' in _get_args(plotter.add_mesh):
+        kwargs['render'] = False
     actor = plotter.add_mesh(*args, **kwargs)
     if smooth_shading and 'Normals' in mesh.point_arrays:
         prop = actor.GetProperty()
@@ -737,6 +750,7 @@ def _close_all():
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         close_all()
+    _FIGURES.clear()
 
 
 def _get_camera_direction(focalpoint, position):
@@ -747,8 +761,11 @@ def _get_camera_direction(focalpoint, position):
     return r, theta, phi, focalpoint
 
 
-def _set_3d_view(figure, azimuth, elevation, focalpoint, distance, roll=None):
+def _set_3d_view(figure, azimuth, elevation, focalpoint, distance, roll=None,
+                 reset_camera=True):
     position = np.array(figure.plotter.camera_position[0])
+    if reset_camera:
+        figure.plotter.reset_camera()
     if focalpoint is None:
         focalpoint = np.array(figure.plotter.camera_position[1])
     r, theta, phi, fp = _get_camera_direction(focalpoint, position)
@@ -758,6 +775,7 @@ def _set_3d_view(figure, azimuth, elevation, focalpoint, distance, roll=None):
     if elevation is not None:
         theta = _deg2rad(elevation)
 
+    # set the distance
     renderer = figure.plotter.renderer
     bounds = np.array(renderer.ComputeVisiblePropBounds())
     if distance is None:
@@ -784,18 +802,22 @@ def _set_3d_view(figure, azimuth, elevation, focalpoint, distance, roll=None):
         position, focalpoint, view_up]
     if roll is not None:
         figure.plotter.camera.SetRoll(roll)
-    # set the distance
 
     figure.plotter.renderer._azimuth = azimuth
     figure.plotter.renderer._elevation = elevation
     figure.plotter.renderer._distance = distance
     figure.plotter.renderer._roll = roll
+    figure.plotter.update()
+    _process_events(figure.plotter)
 
 
 def _set_3d_title(figure, title, size=16):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", category=FutureWarning)
-        figure.plotter.add_text(title, font_size=size, color='white')
+        figure.plotter.add_text(title, font_size=size, color='white',
+                                name='title')
+    figure.plotter.update()
+    _process_events(figure.plotter)
 
 
 def _check_3d_figure(figure):
@@ -875,8 +897,7 @@ def _set_mesh_scalars(mesh, scalars, name):
 
 
 def _update_slider_callback(slider, callback, event_type):
-    _check_option('event_type', event_type,
-                  ['start', 'end', 'always'])
+    _check_option('event_type', event_type, ['start', 'end', 'always'])
 
     def _the_callback(widget, event):
         value = widget.GetRepresentation().GetValue()
@@ -925,6 +946,13 @@ def _update_picking_callback(plotter,
     )
     picker.SetVolumeOpacityIsovalue(0.)
     plotter.picker = picker
+
+
+def _remove_picking_callback(interactor, picker):
+    interactor.RemoveObservers(vtk.vtkCommand.RenderEvent)
+    interactor.RemoveObservers(vtk.vtkCommand.LeftButtonPressEvent)
+    interactor.RemoveObservers(vtk.vtkCommand.EndInteractionEvent)
+    picker.RemoveObservers(vtk.vtkCommand.EndPickEvent)
 
 
 def _arrow_glyph(grid, factor):
@@ -1100,6 +1128,19 @@ def _disabled_depth_peeling():
         yield
     finally:
         rcParams["depth_peeling"]["enabled"] = depth_peeling_enabled
+
+
+@contextmanager
+def _disabled_interaction(renderer):
+    plotter = renderer.plotter
+    if not plotter.renderer.GetInteractive():
+        yield
+    else:
+        plotter.disable()
+        try:
+            yield
+        finally:
+            plotter.enable()
 
 
 @decorator

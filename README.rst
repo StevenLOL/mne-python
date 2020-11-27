@@ -1,11 +1,14 @@
 .. -*- mode: rst -*-
 
-|Travis|_ |Azure|_ |Circle|_ |Codecov|_ |PyPI|_ |conda-forge|_ |Zenodo|_
+|GH-Linux|_ |GH-macOS|_ |Azure|_ |Circle|_ |Codecov|_ |PyPI|_ |conda-forge|_ |Zenodo|_
 
 |MNE|_
 
-.. |Travis| image:: https://api.travis-ci.org/mne-tools/mne-python.svg?branch=master
-.. _Travis: https://travis-ci.org/mne-tools/mne-python/branches
+.. |GH-Linux| image:: https://github.com/mne-tools/mne-python/workflows/linux%20/%20conda/badge.svg?branch=master
+.. _GH-Linux: https://github.com/mne-tools/mne-python/actions?query=branch:master+event:push
+
+.. |GH-macOS| image:: https://github.com/mne-tools/mne-python/workflows/macos%20/%20conda/badge.svg?branch=master
+.. _GH-macOS: https://github.com/mne-tools/mne-python/actions?query=branch:master+event:push
 
 .. |Azure| image:: https://dev.azure.com/mne-tools/mne-python/_apis/build/status/mne-tools.mne-python?branchName=master
 .. _Azure: https://dev.azure.com/mne-tools/mne-python/_build/latest?definitionId=1&branchName=master
@@ -86,23 +89,23 @@ Dependencies
 The minimum required dependencies to run MNE-Python are:
 
 - Python >= 3.6
-- NumPy >= 1.13.3
-- SciPy >= 1.0.0
+- NumPy >= 1.15.4
+- SciPy >= 1.1.0
 
 For full functionality, some functions require:
 
-- Matplotlib >= 2.1
-- Mayavi >= 4.6
-- PySurfer >= 0.8
-- Scikit-learn >= 0.19.1
+- Matplotlib >= 3.0.3
+- Scikit-learn >= 0.20.2
 - Numba >= 0.40
 - NiBabel >= 2.1.0
-- Pandas >= 0.21
+- Pandas >= 0.23.4
 - Picard >= 0.3
 - CuPy >= 4.0 (for NVIDIA CUDA acceleration)
 - DIPY >= 0.10.1
 - Imageio >= 2.6.1
 - PyVista >= 0.24
+- pyvistaqt >= 0.2.0
+- mffpy >= 0.5.7
 
 Contributing to MNE-Python
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

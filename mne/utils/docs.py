@@ -27,7 +27,8 @@ docdict = dict()
 docdict['verbose'] = """
 verbose : bool, str, int, or None
     If not None, override default verbose level (see :func:`mne.verbose`
-    and :ref:`Logging documentation <tut_logging>` for more)."""
+    and :ref:`Logging documentation <tut_logging>` for more).
+    If used, it should be passed as a keyword-argument only."""
 docdict['verbose_meth'] = (docdict['verbose'] + ' Defaults to self.verbose.')
 
 # Preload
@@ -48,6 +49,20 @@ preload : bool, str, or None (default None)
     None, preload=True or False is inferred using the preload status
     of the instances passed in.
 """
+
+# Raw
+_on_missing_base = """on_missing : str
+    Can be ``'raise'`` (default) to raise an error, ``'warn'`` to emit a
+    warning, or ``'ignore'`` to ignore when"""
+docdict['on_split_missing'] = """
+on_split_missing : str
+    Can be ``'raise'`` to raise an error, ``'warn'`` (default) to emit a
+    warning, or ``'ignore'`` to ignore when a split file is missing.
+    The default will change from ``'warn'`` to ``'raise'`` in 0.23, set the
+    value explicitly to avoid deprecation warnings.
+
+    .. versionadded:: 0.22
+"""  # after deprecation period, this can use _on_missing_base
 
 # Cropping
 docdict['include_tmax'] = """
@@ -78,6 +93,44 @@ standardize_names : bool
     If True, standardize MEG and EEG channel names to be
     ``"MEG ###"`` and ``"EEG ###"``. If False (default), native
     channel names in the file will be used when possible.
+"""
+
+docdict['event_color'] = """
+event_color : color object | dict | None
+    Color(s) to use for events. To show all events in the same color, pass any
+    matplotlib-compatible color. To color events differently, pass a `dict`
+    that maps event names or integer event numbers to colors (must include
+    entries for *all* events, or include a "fallback" entry with key ``-1``).
+    If ``None``, colors are chosen from the current Matplotlib color cycle.
+"""
+
+docdict['browse_group_by'] = """
+group_by : str
+    How to group channels. ``'type'`` groups by channel type,
+    ``'original'`` plots in the order of ch_names, ``'selection'`` uses
+    Elekta's channel groupings (only works for Neuromag data),
+    ``'position'`` groups the channels by the positions of the sensors.
+    ``'selection'`` and ``'position'`` modes allow custom selections by
+    using a lasso selector on the topomap. In butterfly mode, ``'type'``
+    and ``'original'`` group the channels by type, whereas ``'selection'``
+    and ``'position'`` use regional grouping. ``'type'`` and ``'original'``
+    modes are ignored when ``order`` is not ``None``. Defaults to ``'type'``.
+"""
+
+
+# Epochs
+docdict['proj_epochs'] = """
+proj : bool | 'delayed'
+    Apply SSP projection vectors. If proj is 'delayed' and reject is not
+    None the single epochs will be projected before the rejection
+    decision, but used in unprojected state if they are kept.
+    This way deciding which projection vectors are good can be postponed
+    to the evoked stage without resulting in lower epoch counts and
+    without producing results different from early SSP application
+    given comparable parameters. Note that in this case baselining,
+    detrending and temporal decimation will be postponed.
+    If proj is False no projections will be applied which is the
+    recommended value if SSPs are not used for cleaning the data.
 """
 
 # Reject by annotation
@@ -376,27 +429,30 @@ axes : list of Axes | None
 """
 
 # Picks
-docdict['picks_header'] = 'picks : str | list | slice | None'
-docdict['picks_base'] = docdict['picks_header'] + """
-    Channels to include. Slices and lists of integers will be
-    interpreted as channel indices. In lists, channel *type* strings
+picks_header = 'picks : str | list | slice | None'
+picks_intro = ('Channels to include. Slices and lists of integers will be '
+               'interpreted as channel indices.')
+_reminder = ("Note that channels in ``info['bads']`` *will be included* if "
+             "their {}indices are explicitly provided.\n")
+reminder = _reminder.format('names or ')
+reminder_nostr = _reminder.format('')
+noref = f'(excluding reference MEG channels). {reminder}'
+picks_base = f"""{picks_header}
+    {picks_intro} In lists, channel *type* strings
     (e.g., ``['meg', 'eeg']``) will pick channels of those
     types, channel *name* strings (e.g., ``['MEG0111', 'MEG2623']``
     will pick the given channels. Can also be the string values
     "all" to pick all channels, or "data" to pick :term:`data channels`.
-    None (default) will pick """
-docdict['picks_all'] = docdict['picks_base'] + 'all channels.\n'
-docdict['picks_all_data'] = docdict['picks_base'] + 'all data channels.\n'
-docdict['picks_all_data_noref'] = (docdict['picks_all_data'][:-2] +
-                                   '(excluding reference MEG channels).\n')
-docdict['picks_good_data'] = docdict['picks_base'] + 'good data channels.\n'
-docdict['picks_good_data_noref'] = (docdict['picks_good_data'][:-2] +
-                                    '(excluding reference MEG channels).\n')
-docdict['picks_nostr'] = """
-picks : list | slice | None
-    Channels to include. Slices and lists of integers will be
-    interpreted as channel indices. None (default) will pick all channels.
-"""
+    None (default) will pick"""
+docdict['picks_header'] = picks_header  # these get reused as stubs in a
+docdict['picks_base'] = picks_base      # couple places (e.g., BaseEpochs)
+docdict['picks_all'] = f'{picks_base} all channels. {reminder}'
+docdict['picks_all_data'] = f'{picks_base} all data channels. {reminder}'
+docdict['picks_good_data'] = f'{picks_base} good data channels. {reminder}'
+docdict['picks_all_data_noref'] = f'{picks_base} all data channels {noref}'
+docdict['picks_good_data_noref'] = f'{picks_base} good data channels {noref}'
+docdict['picks_nostr'] = f"""picks : list | slice | None
+    {picks_intro} None (default) will pick all channels. {reminder_nostr}"""
 
 # Filtering
 docdict['l_freq'] = """
@@ -678,6 +734,14 @@ References
 .. footbibliography::
 """
 
+# ICA
+docdict['n_pca_components_apply'] = """
+n_pca_components : int | float | None
+    The number of PCA components to be kept, either absolute (int)
+    or fraction of the explained variance (float). If None (default),
+    the ``ica.n_pca_components`` from initialization will be used in 0.22;
+    in 0.23 all components will be used.
+"""
 
 # Maxwell filtering
 docdict['maxwell_origin'] = """
@@ -962,11 +1026,69 @@ docdict['use_cps_restricted'] = docdict['use_cps'] + """
     Only used when the inverse is free orientation (``loose=1.``),
     not in surface orientation, and ``pick_ori='normal'``.
 """
+docdict['pctf_mode'] = """
+mode : None | 'mean' | 'max' | 'svd'
+    Compute summary of PSFs/CTFs across all indices specified in 'idx'.
+    Can be:
+
+    * None : Output individual PSFs/CTFs for each specific vertex
+      (Default).
+    * 'mean' : Mean of PSFs/CTFs across vertices.
+    * 'max' : PSFs/CTFs with maximum norm across vertices. Returns the
+      n_comp largest PSFs/CTFs.
+    * 'svd' : SVD components across PSFs/CTFs across vertices. Returns the
+      n_comp first SVD components.
+"""
+docdict['pctf_idx'] = """
+idx : list of int | list of Label
+    Source for indices for which to compute PSFs or CTFs. If mode is None,
+    PSFs/CTFs will be returned for all indices. If mode is not None, the
+    corresponding summary measure will be computed across all PSFs/CTFs
+    available from idx.
+    Can be:
+
+    * list of integers : Compute PSFs/CTFs for all indices to source space
+      vertices specified in idx.
+    * list of Label : Compute PSFs/CTFs for source space vertices in
+      specified labels.
+"""
+docdict['pctf_n_comp'] = """
+n_comp : int
+    Number of PSF/CTF components to return for mode='max' or mode='svd'.
+    Default n_comp=1.
+"""
+docdict['pctf_norm'] = """
+norm : None | 'max' | 'norm'
+    Whether and how to normalise the PSFs and CTFs. This will be applied
+    before computing summaries as specified in 'mode'.
+    Can be:
+
+    * None : Use un-normalized PSFs/CTFs (Default).
+    * 'max' : Normalize to maximum absolute value across all PSFs/CTFs.
+    * 'norm' : Normalize to maximum norm across all PSFs/CTFs.
+"""
+docdict['pctf_return_pca_vars'] = """
+return_pca_vars : bool
+    Whether or not to return the explained variances across the specified
+    vertices for individual SVD components. This is only valid if
+    mode='svd'.
+    Default return_pca_vars=False.
+"""
+docdict['pctf_pca_vars'] = """
+pca_vars : array, shape (n_comp,) | list of array
+    The explained variances of the first n_comp SVD components across the
+    PSFs/CTFs for the specified vertices. Arrays for multiple labels are
+    returned as list. Only returned if mode='svd' and return_pca_vars=True.
+"""
+docdict['pctf_stcs'] = """
+stcs : instance of SourceEstimate | list of instances of SourceEstimate
+    PSFs or CTFs as STC objects.
+    All PSFs/CTFs will be returned as successive samples in STC objects,
+    in the order they are specified in idx. STCs for different labels will
+    be returned as a list.
+"""
 
 # Forward
-_on_missing_base = """on_missing : str
-    Can be ``'raise'`` (default) to raise an error, ``'warn'`` to emit a
-    warning, or ``'ignore'`` to ignore when"""
 docdict['on_missing_fwd'] = """
 %s ``stc`` has vertices that are not in ``fwd``.
 """ % (_on_missing_base,)
@@ -991,6 +1113,10 @@ docdict['trans_not_none'] = """
 trans : str | dict | instance of Transform
     %s
 """ % (_trans_base,)
+docdict['trans_deprecated'] = """
+trans : str | dict | instance of Transform
+    Deprecated and will be removed in 0.23, do not pass this argument.
+"""
 docdict['trans'] = """
 trans : str | dict | instance of Transform | None
     %s
@@ -1001,8 +1127,12 @@ trans : str | dict | instance of Transform | None
 """ % (_trans_base,)
 docdict['subjects_dir'] = """
 subjects_dir : str | None
-    The path to the freesurfer subjects reconstructions.
-    It corresponds to Freesurfer environment variable SUBJECTS_DIR.
+    The path to the FreeSurfer subjects reconstructions.
+    It corresponds to FreeSurfer environment variable ``SUBJECTS_DIR``.
+"""
+docdict['subject'] = """
+subject : str
+    The FreeSurfer subject name.
 """
 
 # Simulation
@@ -1070,9 +1200,9 @@ docdict["plot_psd_doc"] = """
 Plot the power spectral density across channels.
 
 Different channel types are drawn in sub-plots. When the data have been
-processed with a bandpass, lowpass or highpass filter, dashed lines
-indicate the boundaries of the filter (--). The line noise frequency is
-also indicated with a dashed line (-.)
+processed with a bandpass, lowpass or highpass filter, dashed lines (╎)
+indicate the boundaries of the filter. The line noise frequency is
+also indicated with a dashed line (⋮)
 """
 docdict['plot_psd_picks_good_data'] = docdict['picks_good_data'][:-2] + """
     Cannot be None if ``ax`` is supplied.If both ``picks`` and ``ax`` are None
@@ -1402,12 +1532,6 @@ allow_empty : bool | str
        Support for "ignore".
 """
 docdict
-docdict['eltc_trans'] = """%s
-    Only needed when using a volume atlas and
-    ``src`` is in head coordinates (i.e., comes from a forward or inverse).
-
-    .. versionadded:: 0.21.0
-""" % (docdict['trans_not_none'],)
 docdict['eltc_mri_resolution'] = """
 mri_resolution : bool
     If True (default), the volume source space will be upsampled to the
@@ -1622,7 +1746,7 @@ time_format : str | None
     time values will be converted to :class:`pandas.Timedelta` values. {}
     Default is ``'ms'`` in version 0.22, and will change to ``None`` in
     version 0.23.
-"""
+"""  # XXX make sure we deal with this deprecation in 0.23
 raw_tf = ("If ``'datetime'``, time values will be converted to "
           ":class:`pandas.Timestamp` values, relative to "
           "``raw.info['meas_date']`` and offset by ``raw.first_samp``. ")
@@ -1752,6 +1876,21 @@ docdict['baseline_evoked'] = """%(rescale_baseline)s
     2. Subtract this mean from the **entire** ``Evoked``.
 
 """ % docdict
+docdict['baseline_stc'] = """%(rescale_baseline)s
+    Correction is applied **to each source individually** in the following
+    way:
+
+    1. Calculate the mean signal of the baseline period.
+    2. Subtract this mean from the **entire** source estimate data.
+
+    .. note:: Baseline correction is appropriate when signal and noise are
+              approximately additive, and the noise level can be estimated from
+              the baseline interval. This can be the case for non-normalized
+              source activities (e.g. signed and unsigned MNE), but it is not
+              the case for normalized estimates (e.g. signal-to-noise ratios,
+              dSPM, sLORETA).
+
+""" % docdict
 docdict['baseline_report'] = """%(rescale_baseline)s
     Correction is applied in the following way **to each channel:**
 
@@ -1795,6 +1934,12 @@ reject : dict | str | None
 {reject_common}
     If ``reject`` is ``None``, no rejection is performed. If ``'existing'``
     (default), then the rejection parameters set at instantiation are used.
+"""
+
+# Other
+docdict['accept'] = """
+accept : bool
+    If True (default False), accept the license terms of this dataset.
 """
 
 # Finalize

@@ -510,7 +510,7 @@ def _parse_prefilter_string(prefiltering):
 
 
 def _edf_str_int(x, fid=None):
-    return int(x.decode().rstrip('\x00'))
+    return int(x.decode().split('\x00')[0])
 
 
 def _read_edf_header(fname, exclude):
@@ -522,27 +522,55 @@ def _read_edf_header(fname, exclude):
         fid.read(8)  # version (unused here)
 
         # patient ID
-        pid = fid.read(80).decode('latin-1')
-        pid = pid.split(' ', 2)
         patient = {}
-        if len(pid) >= 2:
-            patient['id'] = pid[0]
-            patient['name'] = pid[1]
+        id_info = fid.read(80).decode('latin-1').rstrip()
+        id_info = id_info.split(' ')
+        if len(id_info):
+            patient['id'] = id_info[0]
+            if len(id_info) == 4:
+                try:
+                    birthdate = datetime.strptime(id_info[2], "%d-%b-%Y")
+                except ValueError:
+                    birthdate = "X"
+                patient['sex'] = id_info[1]
+                patient['birthday'] = birthdate
+                patient['name'] = id_info[3]
 
         # Recording ID
         meas_id = {}
-        meas_id['recording_id'] = fid.read(80).decode('latin-1').strip(' \x00')
+        rec_info = fid.read(80).decode('latin-1').rstrip().split(' ')
+        valid_startdate = False
+        if len(rec_info) == 5:
+            try:
+                startdate = datetime.strptime(rec_info[1], "%d-%b-%Y")
+            except ValueError:
+                startdate = "X"
+            else:
+                valid_startdate = True
+            meas_id['startdate'] = startdate
+            meas_id['study_id'] = rec_info[2]
+            meas_id['technician'] = rec_info[3]
+            meas_id['equipment'] = rec_info[4]
 
-        day, month, year = [int(x) for x in
-                            re.findall(r'(\d+)', fid.read(8).decode())]
-        hour, minute, sec = [int(x) for x in
-                             re.findall(r'(\d+)', fid.read(8).decode())]
-        century = 2000 if year < 50 else 1900
+        # If startdate available in recording info, use it instead of the
+        # file's meas_date since it contains all 4 digits of the year
+        if valid_startdate:
+            day = meas_id['startdate'].day
+            month = meas_id['startdate'].month
+            year = meas_id['startdate'].year
+            fid.read(8)  # skip file's meas_date
+        else:
+            meas_date = fid.read(8).decode('latin-1')
+            day, month, year = [int(x) for x in meas_date.split('.')]
+            year = year + 2000 if year < 85 else year + 1900
+
+        meas_time = fid.read(8).decode('latin-1')
+        hour, minute, sec = [int(x) for x in meas_time.split('.')]
         try:
-            meas_date = datetime(year + century, month, day, hour, minute, sec,
+            meas_date = datetime(year, month, day, hour, minute, sec,
                                  tzinfo=timezone.utc)
         except ValueError:
-            warn(f'Invalid date encountered ({year + century:04d}-{month:02d}-'
+            warn(f'Invalid date encountered ({year:04d}-{month:02d}-'
                  f'{day:02d} {hour:02d}:{minute:02d}:{sec:02d}).')
             meas_date = None
 
@@ -719,18 +747,20 @@ def _read_gdf_header(fname, exclude):
             channels = list(range(nchan))
             ch_names = [fid.read(16).decode('latin-1').strip(' \x00')
                         for ch in channels]
+            exclude = _find_exclude_idx(ch_names, exclude)
+            sel = np.setdiff1d(np.arange(len(ch_names)), exclude)
             fid.seek(80 * len(channels), 1)  # transducer
             units = [fid.read(8).decode('latin-1').strip(' \x00')
                      for ch in channels]
-            exclude = _find_exclude_idx(ch_names, exclude)
-            sel = list()
+            edf_info['units'] = list()
             for i, unit in enumerate(units):
+                if i in exclude:
+                    continue
                 if unit[:2] == 'uV':
-                    units[i] = 1e-6
+                    edf_info['units'].append(1e-6)
                 else:
-                    units[i] = 1
-                sel.append(i)
-            units = np.array(units, float)
+                    edf_info['units'].append(1)
+            edf_info['units'] = np.array(edf_info['units'], float)
 
             ch_names = [ch_names[idx] for idx in sel]
             physical_min = np.fromfile(fid, np.float64, len(channels))
@@ -762,8 +792,7 @@ def _read_gdf_header(fname, exclude):
                 meas_date=meas_date,
                 meas_id=meas_id, n_records=n_records, n_samps=n_samps,
                 nchan=nchan, subject_info=patient, physical_max=physical_max,
-                physical_min=physical_min, record_length=record_length,
-                units=units)
+                physical_min=physical_min, record_length=record_length)
 
             fid.seek(32 * edf_info['nchan'], 1)  # reserved
             assert fid.tell() == header_nbytes
@@ -902,6 +931,7 @@ def _read_gdf_header(fname, exclude):
             ch_names = [fid.read(16).decode().strip(' \x00')
                         for ch in channels]
             exclude = _find_exclude_idx(ch_names, exclude)
+            sel = np.setdiff1d(np.arange(len(ch_names)), exclude)
 
             fid.seek(80 * len(channels), 1)  # reserved space
             fid.seek(6 * len(channels), 1)  # phys_dim, obsolete
@@ -914,23 +944,24 @@ def _read_gdf_header(fname, exclude):
             """  # noqa
             units = np.fromfile(fid, np.uint16, len(channels)).tolist()
             unitcodes = np.array(units[:])
-            sel = list()
+            edf_info['units'] = list()
             for i, unit in enumerate(units):
+                if i in exclude:
+                    continue
                 if unit == 4275:  # microvolts
-                    units[i] = 1e-6
+                    edf_info['units'].append(1e-6)
                 elif unit == 4274:  # millivolts
-                    units[i] = 1e-3
+                    edf_info['units'].append(1e-3)
                 elif unit == 512:  # dimensionless
-                    units[i] = 1
+                    edf_info['units'].append(1)
                 elif unit == 0:
-                    units[i] = 1  # unrecognized
+                    edf_info['units'].append(1)  # unrecognized
                 else:
                     warn('Unsupported physical dimension for channel %d '
                          '(assuming dimensionless). Please contact the '
                          'MNE-Python developers for support.' % i)
-                    units[i] = 1
-                sel.append(i)
-            units = np.array(units, float)
+                    edf_info['units'].append(1)
+            edf_info['units'] = np.array(edf_info['units'], float)
 
             ch_names = [ch_names[idx] for idx in sel]
             physical_min = np.fromfile(fid, np.float64, len(channels))
@@ -989,7 +1020,7 @@ def _read_gdf_header(fname, exclude):
                 meas_id=meas_id, n_records=n_records, n_samps=n_samps,
                 nchan=nchan, notch=notch, subject_info=patient,
                 physical_max=physical_max, physical_min=physical_min,
-                record_length=record_length, ref=ref, units=units)
+                record_length=record_length, ref=ref)
 
             # EVENT TABLE
             # -----------------------------------------------------------------

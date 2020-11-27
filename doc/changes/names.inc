@@ -318,6 +318,8 @@
 
 .. _Rahul Nadkarni: https://github.com/rahuln
 
+.. _Jonathan Kuziek:  https://github.com/kuziekj
+
 .. _Lau Møller Andersen: https://github.com/ualsbombe
 
 .. _Martin Schulz: https://github.com/marsipu
@@ -325,3 +327,15 @@
 .. _Jeroen Van Der Donckt: https://github.com/jvdd
 
 .. _Steven Bierer: https://github.com/neurolaunch
+
+.. _Eduard Ort: https://github.com/eort
+
+.. _Aniket Pradhan: https://github.com/Aniket-Pradhan
+
+.. _Tod Flak: https://github.com/todflak
+
+.. _Austin Hurst: https://github.com/a-hurst
+
+.. _Victoria Peterson: https://github.com/vpeterson
+
+.. _Evan Hathaway: https://github.com/ephathaway

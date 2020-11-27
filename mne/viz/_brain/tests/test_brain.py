@@ -20,7 +20,7 @@ from mne.source_space import (read_source_spaces, vertex_to_mni,
                               setup_volume_source_space)
 from mne.datasets import testing
 from mne.utils import check_version
-from mne.viz._brain import Brain, _TimeViewer, _LinkViewer, _BrainScraper
+from mne.viz._brain import Brain, _LinkViewer, _BrainScraper
 from mne.viz._brain.colormap import calculate_lut
 
 from matplotlib import cm, image
@@ -93,9 +93,21 @@ class TstVTKPicker(object):
 
 
 @testing.requires_testing_data
-def test_brain_init(renderer, tmpdir, pixel_ratio):
+def test_brain_gc(renderer, brain_gc):
+    """Test that a minimal version of Brain gets GC'ed."""
+    brain = Brain('fsaverage', 'both', 'inflated', subjects_dir=subjects_dir)
+    brain.close()
+
+
+@testing.requires_testing_data
+def test_brain_init(renderer, tmpdir, pixel_ratio, brain_gc):
     """Test initialization of the Brain instance."""
     from mne.label import read_label
+    from mne.source_estimate import _BaseSourceEstimate
+
+    class FakeSTC(_BaseSourceEstimate):
+        def __init__(self):
+            pass
     hemi = 'lh'
     surf = 'inflated'
     cortex = 'low_contrast'
@@ -105,17 +117,30 @@ def test_brain_init(renderer, tmpdir, pixel_ratio):
     kwargs = dict(subject_id=subject_id, subjects_dir=subjects_dir)
     with pytest.raises(ValueError, match='"size" parameter must be'):
         Brain(hemi=hemi, surf=surf, size=[1, 2, 3], **kwargs)
+    with pytest.raises(KeyError):
+        Brain(hemi='foo', surf=surf, **kwargs)
     with pytest.raises(TypeError, match='figure'):
         Brain(hemi=hemi, surf=surf, figure='foo', **kwargs)
     with pytest.raises(TypeError, match='interaction'):
         Brain(hemi=hemi, surf=surf, interaction=0, **kwargs)
     with pytest.raises(ValueError, match='interaction'):
         Brain(hemi=hemi, surf=surf, interaction='foo', **kwargs)
-    with pytest.raises(KeyError):
-        Brain(hemi='foo', surf=surf, **kwargs)
+    renderer.backend._close_all()
 
     brain = Brain(hemi=hemi, surf=surf, size=size, title=title,
                   cortex=cortex, units='m', **kwargs)
+    with pytest.raises(TypeError, match='not supported'):
+        brain._check_stc(hemi='lh', array=FakeSTC(), vertices=None)
+    brain._hemi = 'foo'  # for testing: hemis
+    with pytest.raises(ValueError, match='not be None'):
+        brain._check_hemi(hemi=None)
+    with pytest.raises(ValueError, match='either "lh" or "rh"'):
+        brain._check_hemi(hemi='foo')
+    with pytest.raises(ValueError, match='either "lh" or "rh"'):
+        brain._check_hemis(hemi='foo')
+    brain._hemi = hemi  # end testing: hemis
+    with pytest.raises(ValueError, match='bool or positive'):
+        brain._to_borders(None, None, 'foo')
     assert brain.interaction == 'trackball'
     # add_data
     stc = read_source_estimate(fname_stc)
@@ -158,6 +183,8 @@ def test_brain_init(renderer, tmpdir, pixel_ratio):
         brain.add_data(hemi_data, fmin=fmin, hemi=h, fmax=fmax,
                        colormap='hot', vertices=hemi_vertices,
                        smoothing_steps='nearest', colorbar=(0, 0), time=None)
+        with pytest.raises(ValueError, match='brain has no defined times'):
+            brain.set_time(0.)
         assert brain.data['lh']['array'] is hemi_data
         assert brain.views == ['lateral']
         assert brain.hemis == ('lh',)
@@ -165,6 +192,9 @@ def test_brain_init(renderer, tmpdir, pixel_ratio):
                        colormap='hot', vertices=hemi_vertices,
                        smoothing_steps=1, initial_time=0., colorbar=False,
                        time=[0])
+        with pytest.raises(ValueError, match='the range of available times'):
+            brain.set_time(7.)
+        brain.set_time(0.)
         brain.set_time_point(0)  # should hit _safe_interp1d
 
         with pytest.raises(ValueError, match='consistent with'):
@@ -186,6 +216,11 @@ def test_brain_init(renderer, tmpdir, pixel_ratio):
                            vertices=hemi_vertices)
     # add label
     label = read_label(fname_label)
+    with pytest.raises(ValueError, match="not a filename"):
+        brain.add_label(0)
+    with pytest.raises(ValueError, match="does not exist"):
+        brain.add_label('foo', subdir='bar')
+    label.name = None  # test unnamed label
     brain.add_label(label, scalar_thresh=0.)
     brain.remove_labels()
     brain.add_label(fname_label)
@@ -199,6 +234,7 @@ def test_brain_init(renderer, tmpdir, pixel_ratio):
 
     # add text
     brain.add_text(x=0, y=0, text='foo')
+    brain.close()
 
     # add annotation
     annots = ['aparc', path.join(subjects_dir, 'fsaverage', 'label',
@@ -229,66 +265,77 @@ def test_brain_init(renderer, tmpdir, pixel_ratio):
 
 @testing.requires_testing_data
 @pytest.mark.slowtest
-def test_brain_save_movie(tmpdir, renderer):
+def test_brain_save_movie(tmpdir, renderer, brain_gc):
     """Test saving a movie of a Brain instance."""
     if renderer._get_3d_backend() == "mayavi":
         pytest.skip('Save movie only supported on PyVista')
-    brain_data = _create_testing_brain(hemi='lh', time_viewer=False)
+    brain = _create_testing_brain(hemi='lh', time_viewer=False)
     filename = str(path.join(tmpdir, "brain_test.mov"))
-    brain_data.save_movie(filename, time_dilation=1,
-                          interpolation='nearest')
-    assert path.isfile(filename)
-    brain_data.close()
+    for interactive_state in (False, True):
+        # for coverage, we set interactivity
+        if interactive_state:
+            brain._renderer.plotter.enable()
+        else:
+            brain._renderer.plotter.disable()
+        brain.save_movie(filename, time_dilation=1,
+                         interpolation='nearest')
+        assert path.isfile(filename)
+    brain.close()
 
 
 @testing.requires_testing_data
 @pytest.mark.slowtest
-def test_brain_timeviewer(renderer_interactive, pixel_ratio):
-    """Test _TimeViewer primitives."""
+def test_brain_time_viewer(renderer_interactive, pixel_ratio, brain_gc):
+    """Test time viewer primitives."""
     if renderer_interactive._get_3d_backend() != 'pyvista':
         pytest.skip('TimeViewer tests only supported on PyVista')
-    brain_data = _create_testing_brain(hemi='both', show_traces=False)
-
-    with pytest.raises(RuntimeError, match='already'):
-        _TimeViewer(brain_data)
-    time_viewer = brain_data.time_viewer
-    time_viewer.callbacks["time"](value=0)
-    time_viewer.callbacks["orientation_lh_0_0"](
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        _create_testing_brain(hemi='lh', show_traces=-1.0)
+    with pytest.raises(ValueError, match="got unknown keys"):
+        _create_testing_brain(hemi='lh', surf='white', src='volume',
+                              volume_options={'foo': 'bar'})
+    brain = _create_testing_brain(hemi='both', show_traces=False)
+    brain.callbacks["time"](value=0)
+    brain.callbacks["orientation_lh_0_0"](
         value='lat',
         update_widget=True
     )
-    time_viewer.callbacks["orientation_lh_0_0"](
+    brain.callbacks["orientation_lh_0_0"](
         value='medial',
         update_widget=True
     )
-    time_viewer.callbacks["time"](
+    brain.callbacks["time"](
         value=0.0,
         time_as_index=False,
     )
-    time_viewer.callbacks["smoothing"](value=1)
-    time_viewer.callbacks["fmin"](value=12.0)
-    time_viewer.callbacks["fmax"](value=4.0)
-    time_viewer.callbacks["fmid"](value=6.0)
-    time_viewer.callbacks["fmid"](value=4.0)
-    time_viewer.callbacks["fscale"](value=1.1)
-    time_viewer.callbacks["fmin"](value=12.0)
-    time_viewer.callbacks["fmid"](value=4.0)
-    time_viewer.toggle_interface()
-    time_viewer.callbacks["playback_speed"](value=0.1)
-    time_viewer.toggle_playback()
-    time_viewer.apply_auto_scaling()
-    time_viewer.restore_user_scaling()
-    time_viewer.reset()
+    brain.callbacks["smoothing"](value=1)
+    brain.callbacks["fmin"](value=12.0)
+    brain.callbacks["fmax"](value=4.0)
+    brain.callbacks["fmid"](value=6.0)
+    brain.callbacks["fmid"](value=4.0)
+    brain.callbacks["fscale"](value=1.1)
+    brain.callbacks["fmin"](value=12.0)
+    brain.callbacks["fmid"](value=4.0)
+    brain.toggle_interface()
+    brain.toggle_interface(value=False)
+    brain.callbacks["playback_speed"](value=0.1)
+    brain.toggle_playback()
+    brain.toggle_playback(value=False)
+    brain.apply_auto_scaling()
+    brain.restore_user_scaling()
+    brain.reset()
     plt.close('all')
-    time_viewer.help()
+    brain.help()
     assert len(plt.get_fignums()) == 1
     plt.close('all')
+    assert len(plt.get_fignums()) == 0
 
     # screenshot
-    brain_data.show_view(view=dict(azimuth=180., elevation=90.))
-    img = brain_data.screenshot(mode='rgb')
+    brain.show_view(view=dict(azimuth=180., elevation=90.))
+    img = brain.screenshot(mode='rgb')
     want_shape = np.array([300 * pixel_ratio, 300 * pixel_ratio, 3])
     assert_allclose(img.shape, want_shape)
+    brain.close()
 
 
 @testing.requires_testing_data
@@ -304,25 +351,23 @@ def test_brain_timeviewer(renderer_interactive, pixel_ratio):
     pytest.param('mixed', marks=pytest.mark.slowtest),
 ])
 @pytest.mark.slowtest
-def test_brain_timeviewer_traces(renderer_interactive, hemi, src, tmpdir):
-    """Test _TimeViewer traces."""
+def test_brain_traces(renderer_interactive, hemi, src, tmpdir,
+                      brain_gc):
+    """Test brain traces."""
     if renderer_interactive._get_3d_backend() != 'pyvista':
         pytest.skip('Only PyVista supports traces')
-    brain_data = _create_testing_brain(
+    brain = _create_testing_brain(
         hemi=hemi, surf='white', src=src, show_traces=0.5, initial_time=0,
         volume_options=None,  # for speed, don't upsample
         n_time=1 if src == 'mixed' else 5,
     )
-    with pytest.raises(RuntimeError, match='already'):
-        _TimeViewer(brain_data)
-    time_viewer = brain_data.time_viewer
-    assert time_viewer.show_traces
-    assert hasattr(time_viewer, "picked_points")
-    assert hasattr(time_viewer, "_spheres")
+    assert brain.show_traces
+    assert hasattr(brain, "picked_points")
+    assert hasattr(brain, "_spheres")
 
     # test points picked by default
-    picked_points = brain_data.get_picked_points()
-    spheres = time_viewer._spheres
+    picked_points = brain.get_picked_points()
+    spheres = brain._spheres
     hemi_str = list()
     if src in ('surface', 'mixed'):
         hemi_str.extend([hemi] if hemi in ('lh', 'rh') else ['lh', 'rh'])
@@ -336,7 +381,7 @@ def test_brain_timeviewer_traces(renderer_interactive, hemi, src, tmpdir):
     assert len(spheres) == n_spheres
 
     # test removing points
-    time_viewer.clear_points()
+    brain.clear_points()
     assert len(spheres) == 0
     for key in ('lh', 'rh', 'vol'):
         assert len(picked_points[key]) == 0
@@ -346,20 +391,20 @@ def test_brain_timeviewer_traces(renderer_interactive, hemi, src, tmpdir):
     for idx, current_hemi in enumerate(hemi_str):
         assert len(spheres) == 0
         if current_hemi == 'vol':
-            current_mesh = brain_data._data['vol']['grid']
-            vertices = brain_data._data['vol']['vertices']
+            current_mesh = brain._data['vol']['grid']
+            vertices = brain._data['vol']['vertices']
             values = current_mesh.cell_arrays['values'][vertices]
             cell_id = vertices[np.argmax(np.abs(values))]
         else:
-            current_mesh = brain_data._hemi_meshes[current_hemi]
+            current_mesh = brain._hemi_meshes[current_hemi]
             cell_id = rng.randint(0, current_mesh.n_cells)
-        test_picker = TstVTKPicker(None, None, current_hemi, brain_data)
-        assert time_viewer.on_pick(test_picker, None) is None
+        test_picker = TstVTKPicker(None, None, current_hemi, brain)
+        assert brain._on_pick(test_picker, None) is None
         test_picker = TstVTKPicker(
-            current_mesh, cell_id, current_hemi, brain_data)
+            current_mesh, cell_id, current_hemi, brain)
         assert cell_id == test_picker.cell_id
         assert test_picker.point_id is None
-        time_viewer.on_pick(test_picker, None)
+        brain._on_pick(test_picker, None)
         assert test_picker.point_id is not None
         assert len(picked_points[current_hemi]) == 1
         assert picked_points[current_hemi][0] == test_picker.point_id
@@ -378,8 +423,8 @@ def test_brain_timeviewer_traces(renderer_interactive, hemi, src, tmpdir):
         mni = vertex_to_mni(
             vertices=vertex_id,
             hemis=hemi_int,
-            subject=brain_data._subject_id,
-            subjects_dir=brain_data._subjects_dir
+            subject=brain._subject_id,
+            subjects_dir=brain._subjects_dir
         )
         label = "{}:{} MNI: {}".format(
             hemi_prefix, str(vertex_id).ljust(6),
@@ -390,20 +435,21 @@ def test_brain_timeviewer_traces(renderer_interactive, hemi, src, tmpdir):
         # remove the sphere by clicking in its vicinity
         old_len = len(spheres)
         test_picker._actors = sum((s._actors for s in spheres), [])
-        time_viewer.on_pick(test_picker, None)
+        brain._on_pick(test_picker, None)
         assert len(spheres) < old_len
 
-    screenshot = brain_data.screenshot()
-    screenshot_all = brain_data.screenshot(time_viewer=True)
+    screenshot = brain.screenshot()
+    screenshot_all = brain.screenshot(time_viewer=True)
     assert screenshot.shape[0] < screenshot_all.shape[0]
     # and the scraper for it (will close the instance)
     # only test one condition to save time
     if not (hemi == 'rh' and src == 'surface' and
             check_version('sphinx_gallery')):
+        brain.close()
         return
     fnames = [str(tmpdir.join(f'temp_{ii}.png')) for ii in range(2)]
     block_vars = dict(image_path_iterator=iter(fnames),
-                      example_globals=dict(brain=brain_data))
+                      example_globals=dict(brain=brain))
     block = ('code', """
 something
 # brain.save_movie(time_dilation=1, framerate=1,
@@ -413,6 +459,7 @@ something
     gallery_conf = dict(src_dir=str(tmpdir), compress_images=[])
     scraper = _BrainScraper()
     rst = scraper(block, block_vars, gallery_conf)
+    assert brain.plotter is None  # closed
     gif_0 = fnames[0][:-3] + 'gif'
     for fname in (gif_0, fnames[1]):
         assert path.basename(fname) in rst
@@ -425,12 +472,12 @@ something
 
 @testing.requires_testing_data
 @pytest.mark.slowtest
-def test_brain_linkviewer(renderer_interactive):
+def test_brain_linkviewer(renderer_interactive, brain_gc):
     """Test _LinkViewer primitives."""
     if renderer_interactive._get_3d_backend() != 'pyvista':
         pytest.skip('Linkviewer only supported on PyVista')
     brain1 = _create_testing_brain(hemi='lh', show_traces=False)
-    brain2 = _create_testing_brain(hemi='lh', show_traces=True)
+    brain2 = _create_testing_brain(hemi='lh', show_traces='separate')
     brain1._times = brain1._times * 2
     with pytest.warns(RuntimeWarning, match='linking time'):
         link_viewer = _LinkViewer(
@@ -450,15 +497,19 @@ def test_brain_linkviewer(renderer_interactive):
         picking=True,
     )
     link_viewer.set_time_point(value=0)
-    link_viewer.time_viewers[0].mpl_canvas.time_func(0)
+    link_viewer.brains[0].mpl_canvas.time_func(0)
     link_viewer.set_fmin(0)
     link_viewer.set_fmid(0.5)
     link_viewer.set_fmax(1)
     link_viewer.set_playback_speed(value=0.1)
     link_viewer.toggle_playback()
+    del link_viewer
+    brain1.close()
+    brain2.close()
+    brain_data.close()
 
 
-def test_brain_colormap():
+def test_calculate_lut():
     """Test brain's colormap functions."""
     colormap = "coolwarm"
     alpha = 1.0

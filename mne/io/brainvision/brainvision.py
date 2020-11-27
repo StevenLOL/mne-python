@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Conversion tool from Brain Vision EEG to FIF."""
+"""Conversion tool from BrainVision EEG to FIF."""
 # Authors: Teon Brooks <teon.brooks@gmail.com>
 #          Christian Brodbeck <christianbrodbeck@nyu.edu>
 #          Eric Larson <larson.eric.d@gmail.com>
@@ -220,6 +220,9 @@ def _read_vmrk(fname):
     for info in items:
         info_data = info.split(',')
         mtype, mdesc, this_onset, this_duration = info_data[:4]
+        # commas in mtype and mdesc are handled as "\1". convert back to comma
+        mtype = mtype.replace(r'\1', ',')
+        mdesc = mdesc.replace(r'\1', ',')
         if date_str == '' and len(info_data) == 5 and mtype == 'New Segment':
             # to handle the origin of time and handle the presence of multiple
             # New Segment annotations. We only keep the first one that is
@@ -498,12 +501,20 @@ def _get_vhdr_info(vhdr_fname, eog, misc, scale):
     for chan, props in cfg.items('Channel Infos'):
         n = int(re.findall(r'ch(\d+)', chan)[0]) - 1
         props = props.split(',')
-        # default to microvolts because that's what the older brainvision
-        # standard explicitly assumed; the unit is only allowed to be
+
+        # default to µV, following the BV specs; the unit is only allowed to be
         # something else if explicitly stated (cf. EEGLAB export below)
         if len(props) < 4:
-            props += (u'µV',)
+            # deal with older files, which have no unit property
+            props += ('µV',)
+        elif props[3] == '':
+            # deal with files where the unit property is simply empty, which
+            # are created e.g. by PyCorder
+            props[3] = 'µV'
+
         name, _, resolution, unit = props[:4]
+        # in BrainVision, commas in channel names are encoded as "\1"
+        name = name.replace(r'\1', ',')
         ch_dict[chan] = name
         ch_names[n] = name
         if resolution == "":

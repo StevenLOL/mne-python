@@ -18,7 +18,7 @@ from collections.abc import Iterable
 from functools import partial
 
 import numpy as np
-from scipy import linalg, sparse
+from scipy import linalg
 
 from ..defaults import DEFAULTS
 from ..fixes import einsum, _crop_colorbar, _get_img_fdata, _get_args
@@ -31,7 +31,7 @@ from ..source_space import (_ensure_src, _create_surf_spacing, _check_spacing,
 
 from ..surface import (get_meg_helmet_surf, read_surface, _DistanceQuery,
                        transform_surface_to, _project_onto_surface,
-                       mesh_edges, _reorder_ccw, _complete_sphere_surf)
+                       _reorder_ccw, _complete_sphere_surf)
 from ..transforms import (_find_trans, apply_trans, rot_to_quat,
                           combine_transforms, _get_trans, _ensure_trans,
                           invert_transform, Transform,
@@ -438,7 +438,7 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
         The subject name corresponding to FreeSurfer environment
         variable SUBJECT. Can be omitted if ``src`` is provided.
     %(subjects_dir)s
-    surfaces : str | list
+    surfaces : str | list | dict
         Surfaces to plot. Supported values:
 
         * scalp: one of 'head', 'outer_skin' (alias for 'head'),
@@ -447,6 +447,12 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
           'inner_skull')
         * brain: one of 'pial', 'white', 'inflated', or 'brain'
           (alias for 'pial').
+
+        Can be dict to specify alpha values for each surface. Use None
+        to specify default value. Specified values must be between 0 and 1.
+        for example::
+
+            surfaces=dict(brain=0.4, outer_skull=0.6, head=None)
 
         Defaults to 'auto', which will look for a head surface and plot
         it if found.
@@ -593,6 +599,20 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
 
     if isinstance(surfaces, str):
         surfaces = [surfaces]
+    if isinstance(surfaces, dict):
+        user_alpha = surfaces.copy()
+        for key, val in user_alpha.items():
+            _validate_type(key, "str", f"surfaces key {repr(key)}")
+            _validate_type(val, (None, "numeric"), f"surfaces[{repr(key)}]")
+            if val is not None:
+                user_alpha[key] = float(val)
+                if not 0 <= user_alpha[key] <= 1:
+                    raise ValueError(
+                        f'surfaces[{repr(key)}] ({val}) must be'
+                        ' between 0 and 1'
+                    )
+    else:
+        user_alpha = {}
     surfaces = list(surfaces)
     for s in surfaces:
         _validate_type(s, "str", "all entries in surfaces")
@@ -813,6 +833,8 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
     else:  # exactly 1
         brain = brain[0]
         surfaces.pop(surfaces.index(brain))
+        if brain in user_alpha:
+            user_alpha['lh'] = user_alpha['rh'] = user_alpha.pop(brain)
         brain = 'pial' if brain == 'brain' else brain
         if is_sphere:
             if len(bem['layers']) > 0:
@@ -836,9 +858,11 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
     skull_alpha = dict()
     skull_colors = dict()
     hemi_val = 0.5
+    max_alpha = 1.0 if len(other_picks['seeg']) == 0 else 0.75
     if src is None or (brain and any(s['type'] == 'surf' for s in src)):
-        hemi_val = 1.
-    alphas = (4 - np.arange(len(skull) + 1)) * (0.5 / 4.)
+        hemi_val = max_alpha
+    alphas = np.linspace(max_alpha / 2., 0, 5)[:len(skull) + 1]
+
     for idx, this_skull in enumerate(skull):
         if isinstance(this_skull, dict):
             skull_surf = this_skull
@@ -864,7 +888,7 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
         surfs[this_skull] = skull_surf
 
     if src is None and brain is False and len(skull) == 0 and not show_axes:
-        head_alpha = 1.0
+        head_alpha = max_alpha
     else:
         head_alpha = alphas[0]
 
@@ -887,7 +911,7 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
     car_loc = list()
     eeg_loc = list()
     eegp_loc = list()
-    other_loc = {key: list() for key in other_keys}
+    other_loc = dict()
     if len(eeg) > 0:
         eeg_loc = np.array([info['chs'][k]['loc'][:3] for k in eeg_picks])
         if len(eeg_loc) > 0:
@@ -947,27 +971,36 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
     del dig
     for key, picks in other_picks.items():
         if other_bools[key] and len(picks):
+            title = DEFAULTS["titles"][key] if key != 'fnirs' else 'fNIRS'
+            if key != 'fnirs' or 'channels' in fnirs:
+                other_loc[key] = [
+                    info['chs'][pick]['loc'][:3] for pick in picks
+                ]
+                # deal with NaN
+                other_loc[key] = np.array([loc for loc in other_loc[key]
+                                           if np.isfinite(loc).all()], float)
+                logger.info(
+                    f'Plotting {len(other_loc[key])} {title}'
+                    f' location{_pl(other_loc[key])}')
             if key == 'fnirs':
-                if 'channels' in fnirs:
-                    other_loc[key] = np.array([info['chs'][pick]['loc'][:3]
-                                               for pick in picks])
                 if 'sources' in fnirs:
                     other_loc['source'] = np.array(
                         [info['chs'][pick]['loc'][3:6]
                          for pick in picks])
                     logger.info('Plotting %d %s source%s'
                                 % (len(other_loc['source']),
-                                   key, _pl(other_loc['source'])))
+                                   title, _pl(other_loc['source'])))
                 if 'detectors' in fnirs:
                     other_loc['detector'] = np.array(
                         [info['chs'][pick]['loc'][6:9]
                          for pick in picks])
                     logger.info('Plotting %d %s detector%s'
                                 % (len(other_loc['detector']),
-                                   key, _pl(other_loc['detector'])))
-                other_keys = sorted(other_loc.keys())
-            logger.info('Plotting %d %s location%s'
-                        % (len(other_loc[key]), key, _pl(other_loc[key])))
+                                   title, _pl(other_loc['detector'])))
+    for v in other_loc.values():
+        v[:] = apply_trans(head_trans, v)
+    other_keys = sorted(other_loc)  # re-sort and only keep non-empty
+    del other_bools
 
     # initialize figure
     renderer = _get_renderer(fig, bgcolor=(0.5, 0.5, 0.5), size=(800, 800))
@@ -977,6 +1010,10 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
     # plot surfaces
     alphas = dict(head=head_alpha, helmet=0.25, lh=hemi_val, rh=hemi_val)
     alphas.update(skull_alpha)
+    # replace default alphas with specified user_alpha
+    for k, v in user_alpha.items():
+        if v is not None:
+            alphas[k] = v
     colors = dict(head=(0.6,) * 3, helmet=(0.0, 0.0, 0.6), lh=(0.5,) * 3,
                   rh=(0.5,) * 3)
     colors.update(skull_colors)
@@ -1072,10 +1109,12 @@ def plot_alignment(info=None, trans=None, subject=None, subjects_dir=None,
                               fwd_nn[:, ori, 2],
                               color=color, mode='arrow', scale=1.5e-3)
     if 'pairs' in fnirs and len(fnirs_picks) > 0:
-        fnirs_loc = np.array([info['chs'][k]['loc'][3:9] for k in fnirs_picks])
-        logger.info('Plotting %d fnirs pairs' % (fnirs_loc.shape[0]))
-        renderer.tube(origin=fnirs_loc[:, :3],
-                      destination=fnirs_loc[:, 3:])
+        origin = apply_trans(head_trans, np.array(
+            [info['chs'][k]['loc'][3:6] for k in fnirs_picks]))
+        destination = apply_trans(head_trans, np.array(
+            [info['chs'][k]['loc'][6:9] for k in fnirs_picks]))
+        logger.info(f'Plotting {origin.shape[0]} fNIRS pair{_pl(origin)}')
+        renderer.tube(origin=origin, destination=destination)
 
     renderer.set_camera(azimuth=90, elevation=90,
                         distance=0.6, focalpoint=(0., 0., 0.))
@@ -1363,7 +1402,7 @@ def _key_pressed_slider(event, params):
 
 def _smooth_plot(this_time, params):
     """Smooth source estimate data and plot with mpl."""
-    from ..morph import _morph_buffer
+    from ..morph import _hemi_morph
     ax = params['ax']
     stc = params['stc']
     ax.clear()
@@ -1379,9 +1418,10 @@ def _smooth_plot(this_time, params):
     else:
         data = stc.data[len(stc.vertices[0]):, time_idx:time_idx + 1]
 
-    array_plot = _morph_buffer(data, params['vertices'], params['e'],
-                               params['smoothing_steps'], params['n_verts'],
-                               params['inuse'], params['maps'])
+    morph = _hemi_morph(
+        params['tris'], params['inuse'], params['vertices'],
+        params['smoothing_steps'], maps=None, warn=True)
+    array_plot = morph @ data
 
     range_ = params['scale_pts'][2] - params['scale_pts'][0]
     colors = (array_plot - params['scale_pts'][0]) / range_
@@ -1393,14 +1433,12 @@ def _smooth_plot(this_time, params):
                             antialiased=False, vmin=0, vmax=1)
     color_ave = np.mean(colors[faces], axis=1).flatten()
     curv_ave = np.mean(params['curv'][faces], axis=1).flatten()
-    # matplotlib/matplotlib#11877
-    facecolors = polyc._facecolors3d
     colors = cmap(color_ave)
     # alpha blend
     colors[:, :3] *= colors[:, [3]]
     colors[:, :3] += greymap(curv_ave)[:, :3] * (1. - colors[:, [3]])
     colors[:, 3] = 1.
-    facecolors[:] = colors
+    polyc.set_facecolor(colors)
     if params['time_label'] is not None:
         ax.set_title(params['time_label'](times[time_idx] * scaler,),
                      color='w')
@@ -1418,7 +1456,6 @@ def _plot_mpl_stc(stc, subject=None, surface='inflated', hemi='lh',
                   transparent=True):
     """Plot source estimate using mpl."""
     import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
     from matplotlib import cm
     from matplotlib.widgets import Slider
     import nibabel as nib
@@ -1454,7 +1491,7 @@ def _plot_mpl_stc(stc, subject=None, surface='inflated', hemi='lh',
 
     time_label, times = _handle_time(time_label, time_unit, stc.times)
     fig = plt.figure(figsize=(6, 6)) if figure is None else figure
-    ax = Axes3D(fig)
+    ax = fig.gca(projection='3d')
     hemi_idx = 0 if hemi == 'lh' else 1
     surf = op.join(subjects_dir, subject, 'surf', '%s.%s' % (hemi, surface))
     if spacing == 'all':
@@ -1474,11 +1511,6 @@ def _plot_mpl_stc(stc, subject=None, surface='inflated', hemi='lh',
     vertices = stc.vertices[hemi_idx]
     n_verts = len(vertices)
     tris = _get_subject_sphere_tris(subject, subjects_dir)[hemi_idx]
-    e = mesh_edges(tris)
-    e.data[e.data == 2] = 1
-    n_vertices = e.shape[0]
-    maps = sparse.identity(n_vertices).tocsr()
-    e = e + sparse.eye(n_vertices, n_vertices)
     cmap = cm.get_cmap(colormap)
     greymap = cm.get_cmap('Greys')
 
@@ -1486,9 +1518,9 @@ def _plot_mpl_stc(stc, subject=None, surface='inflated', hemi='lh',
         op.join(subjects_dir, subject, 'surf', '%s.curv' % hemi))[inuse]
     curv = np.clip(np.array(curv > 0, np.int64), 0.33, 0.66)
     params = dict(ax=ax, stc=stc, coords=coords, faces=faces,
-                  hemi_idx=hemi_idx, vertices=vertices, e=e,
+                  hemi_idx=hemi_idx, vertices=vertices, tris=tris,
                   smoothing_steps=smoothing_steps, n_verts=n_verts,
-                  inuse=inuse, maps=maps, cmap=cmap, curv=curv,
+                  inuse=inuse, cmap=cmap, curv=curv,
                   scale_pts=scale_pts, greymap=greymap, time_label=time_label,
                   time_unit=time_unit)
     _smooth_plot(initial_time, params)
@@ -1557,19 +1589,17 @@ def link_brains(brains, time=True, camera=False, colorbar=True,
     if _get_3d_backend() != 'pyvista':
         raise NotImplementedError("Expected 3d backend is pyvista but"
                                   " {} was given.".format(_get_3d_backend()))
-    from ._brain import Brain, _TimeViewer, _LinkViewer
+    from ._brain import Brain, _LinkViewer
     if not isinstance(brains, Iterable):
         brains = [brains]
     if len(brains) == 0:
         raise ValueError("The collection of brains is empty.")
     for brain in brains:
-        if isinstance(brain, Brain):
-            # check if the _TimeViewer wrapping is not already applied
-            if not hasattr(brain, 'time_viewer') or brain.time_viewer is None:
-                brain = _TimeViewer(brain)
-        else:
+        if not isinstance(brain, Brain):
             raise TypeError("Expected type is Brain but"
                             " {} was given.".format(type(brain)))
+        # enable time viewer if necessary
+        brain.setup_time_viewer()
     subjects = [brain._subject_id for brain in brains]
     if subjects.count(subjects[0]) != len(subjects):
         raise RuntimeError("Cannot link brains from different subjects.")
@@ -1584,11 +1614,11 @@ def link_brains(brains, time=True, camera=False, colorbar=True,
     )
 
 
-def _triage_stc(stc, src, surface, backend_name, kind='scalar'):
+def _check_volume(stc, src, surface, backend_name):
     from ..source_estimate import (
         _BaseSurfaceSourceEstimate, _BaseMixedSourceEstimate)
     if isinstance(stc, _BaseSurfaceSourceEstimate):
-        stc_vol = src_vol = None
+        return False
     else:
         if backend_name == 'mayavi':
             raise RuntimeError(
@@ -1597,19 +1627,12 @@ def _triage_stc(stc, src, surface, backend_name, kind='scalar'):
         _validate_type(src, SourceSpaces, 'src',
                        'src when stc is a mixed or volume source estimate')
         if isinstance(stc, _BaseMixedSourceEstimate):
-            stc_vol = stc.volume()
-            stc = stc.surface()
             # When showing subvolumes, surfaces that preserve geometry must
             # be used (i.e., no inflated)
             _check_option(
                 'surface', surface, ('white', 'pial'),
                 extra='when plotting a mixed source estimate')
-        else:
-            stc_vol = stc
-            stc = None
-            src_vol = src
-        src_vol = src[2:] if src.kind == 'mixed' else src
-    return stc, stc_vol, src_vol
+        return True
 
 
 @verbose
@@ -1696,9 +1719,9 @@ def plot_source_estimates(stc, subject=None, surface='inflated', hemi='lh',
     time_unit : 's' | 'ms'
         Whether time is represented in seconds ("s", default) or
         milliseconds ("ms").
-    backend : 'auto' | 'mayavi' | 'matplotlib'
+    backend : 'auto' | 'mayavi' | 'pyvista' | 'matplotlib'
         Which backend to use. If ``'auto'`` (default), tries to plot with
-        mayavi, but resorts to matplotlib if mayavi is not available.
+        pyvista, but resorts to matplotlib if no 3d backend is available.
 
         .. versionadded:: 0.15.0
     spacing : str
@@ -1742,11 +1765,15 @@ def plot_source_estimates(stc, subject=None, surface='inflated', hemi='lh',
     subjects_dir = get_subjects_dir(subjects_dir=subjects_dir,
                                     raise_error=True)
     subject = _check_subject(stc.subject, subject, True)
-    _check_option('backend', backend, ['auto', 'matplotlib', 'mayavi'])
+    _check_option('backend', backend,
+                  ['auto', 'matplotlib', 'mayavi', 'pyvista'])
     plot_mpl = backend == 'matplotlib'
     if not plot_mpl:
         try:
-            set_3d_backend(_get_3d_backend())
+            if backend == 'auto':
+                set_3d_backend(_get_3d_backend())
+            else:
+                set_3d_backend(backend)
         except (ImportError, ModuleNotFoundError):
             if backend == 'auto':
                 warn('No 3D backend found. Resorting to matplotlib 3d.')
@@ -1801,9 +1828,7 @@ def _plot_stc(stc, subject, surface, hemi, colormap, time_label,
     mapdata = _process_clim(clim, colormap, transparent, use,
                             allow_pos_lims=not vec)
 
-    stc_surf, stc_vol, src_vol = _triage_stc(
-        stc, src, surface, backend, 'scalar')
-    del src, stc
+    volume = _check_volume(stc, src, surface, backend)
 
     # XXX we should only need to do this for PySurfer/Mayavi, the PyVista
     # plotter should be smart enough to do this separation in the cmap-to-ctab
@@ -1822,8 +1847,6 @@ def _plot_stc(stc, subject, surface, hemi, colormap, time_label,
         hemis = ['lh', 'rh']
     else:
         hemis = [hemi]
-    if stc_vol is not None:
-        hemis.append('vol')
 
     if overlay_alpha is None:
         overlay_alpha = brain_alpha
@@ -1839,7 +1862,7 @@ def _plot_stc(stc, subject, surface, hemi, colormap, time_label,
         "views": views, "alpha": brain_alpha,
     }
     if backend in ['pyvista', 'notebook']:
-        kwargs["show"] = not time_viewer
+        kwargs["show"] = False
         kwargs["view_layout"] = view_layout
     else:
         kwargs.update(_check_pysurfer_antialias(Brain))
@@ -1860,19 +1883,8 @@ def _plot_stc(stc, subject, surface, hemi, colormap, time_label,
     sd_kwargs = dict(transparent=transparent, verbose=False)
     center = 0. if diverging else None
     for hemi in hemis:
-        if hemi == 'vol':
-            data = stc_vol.data
-            vertices = np.concatenate(stc_vol.vertices)
-        else:
-            if stc_surf is None:
-                continue
-            data = getattr(stc_surf, hemi + '_data')
-            vertices = stc_surf.vertices[0 if hemi == 'lh' else 1]
-            if len(data) == 0:
-                continue
         kwargs = {
-            "array": data, "colormap": colormap,
-            "vertices": vertices,
+            "colormap": colormap,
             "smoothing_steps": smoothing_steps,
             "time": times, "time_label": time_label,
             "alpha": overlay_alpha, "hemi": hemi,
@@ -1885,21 +1897,30 @@ def _plot_stc(stc, subject, surface, hemi, colormap, time_label,
             "verbose": False
         }
         if using_mayavi:
+            kwargs["array"] = getattr(stc, hemi + '_data')
+            kwargs["vertices"] = stc.vertices[0 if hemi == 'lh' else 1]
             kwargs["min"] = scale_pts[0]
             kwargs["mid"] = scale_pts[1]
             kwargs["max"] = scale_pts[2]
         else:  # pyvista
+            kwargs["array"] = stc
             kwargs["fmin"] = scale_pts[0]
             kwargs["fmid"] = scale_pts[1]
             kwargs["fmax"] = scale_pts[2]
             kwargs["clim"] = clim
-            kwargs["volume_options"] = volume_options
-            kwargs["src"] = src_vol
+            kwargs["src"] = src
         kwargs.update({} if add_data_kwargs is None else add_data_kwargs)
+        if volume and src.kind == 'volume':
+            continue
         with warnings.catch_warnings(record=True):  # traits warnings
             brain.add_data(**kwargs)
         brain.scale_data_colormap(fmin=scale_pts[0], fmid=scale_pts[1],
                                   fmax=scale_pts[2], **sd_kwargs)
+
+    if volume:
+        kwargs["hemi"] = 'vol'
+        kwargs["volume_options"] = volume_options
+        brain.add_data(**kwargs)
 
     need_peeling = (brain_alpha < 1.0 and
                     sys.platform != 'darwin' and
@@ -1949,8 +1970,11 @@ def _plot_stc(stc, subject, surface, hemi, colormap, time_label,
             from surfer import TimeViewer
             TimeViewer(brain)
         else:  # PyVista
-            from ._brain import _TimeViewer as TimeViewer
-            TimeViewer(brain, show_traces=show_traces)
+            brain.setup_time_viewer(time_viewer=time_viewer,
+                                    show_traces=show_traces)
+    else:
+        if not using_mayavi:
+            brain.show()
 
     return brain
 
@@ -3020,7 +3044,7 @@ def _plot_dipole_mri_orthoview(dipole, trans, subject, subjects_dir=None,
     dd = dims // 2
     if ax is None:
         fig = plt.figure()
-        ax = Axes3D(fig)
+        ax = fig.gca(projection='3d')
     else:
         _validate_type(ax, Axes3D, "ax", "Axes3D")
         fig = ax.get_figure()
